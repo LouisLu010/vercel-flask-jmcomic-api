@@ -93,11 +93,36 @@ def normalize_rgb_image(image):
     return image
 
 
+def optimize_png_image(image, quality: int):
+    quality = max(1, min(100, quality))
+    image = normalize_rgb_image(image)
+
+    if quality >= 95:
+        return image
+
+    colors = max(16, min(256, int(16 + quality * 2.4)))
+    return image.quantize(
+        colors=colors,
+        method=Image.Quantize.MEDIANCUT,
+    )
+
+
+def png_compress_level_from_quality(quality: int) -> int:
+    quality = max(1, min(100, quality))
+    return max(0, min(9, round((100 - quality) / 100 * 9)))
+
+
 def build_image_response(image, filename_base: str, quality: int = 50):
     img_io = BytesIO()
 
     if is_truthy_arg("ifPNG"):
-        image.save(img_io, "PNG", optimize=True)
+        image = optimize_png_image(image, quality)
+        image.save(
+            img_io,
+            "PNG",
+            optimize=True,
+            compress_level=png_compress_level_from_quality(quality),
+        )
         mimetype = "image/png"
         filename = f"{filename_base}.png"
     else:
@@ -216,23 +241,20 @@ def get_search(value, client_page=1):
         # 构建符合文档要求的搜索结果格式
         results = []
         for item in client_results:
-            results.append({
-                "comic_id": item["album_id"],
-                "title": item["title"],
-                "cover_url": f"{api_url}/album/{item['album_id']}/cover",
-                "pages": 0
-            })
+            results.append(
+                {
+                    "comic_id": item["album_id"],
+                    "title": item["title"],
+                    "cover_url": f"{api_url}/album/{item['album_id']}/cover",
+                    "pages": 0,
+                }
+            )
 
-        return jsonify(
-            {
-                "page": client_page,
-                "has_more": has_more,
-                "results": results
-            }
-        )
+        return jsonify({"page": client_page, "has_more": has_more, "results": results})
 
     except Exception as e:
         return jsonify({"code": 500, "message": str(e)}), 500
+
 
 @app.get("/album/<int:item_id>")
 @app.get("/album/<int:item_id>/")
@@ -296,27 +318,30 @@ def get_album_info(item_id: int, impl="html", url=["18comic.vip"]):
 def get_photo_chapter(item_id: int, chapter: int = 1):
     try:
         a = JmOption.default().new_jm_client()
-        
+
         thisChapter: JmAlbumDetail = a.get_album_detail(item_id)
         print(thisChapter.episode_list[chapter - 1][0])
-        
+
         if len(thisChapter.episode_list) < 1 or chapter > len(thisChapter.episode_list):
             return jsonify({"code": 404, "message": "Chapter not found"}), 404
-        
+
         photo_id = thisChapter.episode_list[chapter - 1][0]
-        
+
         photo_detail: JmPhotoDetail = a.get_photo_detail(photo_id)
-        
+
         api_url = request.host_url.rstrip("/")
-        
-        images = [{"url": f"{api_url}/image/proxy?url={api_url}/photo/{photo_id}/{photo_id}_{page_num}.jpg"} for page_num in range(1, len(photo_detail) + 1)]
-        
-        return jsonify({
-            "title": photo_detail.name,
-            "images": images
-        })
+
+        images = [
+            {
+                "url": f"{api_url}/image/proxy?url={api_url}/photo/{photo_id}/{photo_id}_{page_num}.jpg"
+            }
+            for page_num in range(1, len(photo_detail) + 1)
+        ]
+
+        return jsonify({"title": photo_detail.name, "images": images})
     except Exception as e:
         return jsonify({"code": 500, "message": str(e)}), 500
+
 
 # 在Flask路由部分添加图片代理接口
 @app.get("/image/proxy")
@@ -388,7 +413,9 @@ def _convert_to_lvgl8(image):
     for i in range(256):
         idx = i * 3
         if idx + 2 < len(raw_palette):
-            palette.append((raw_palette[idx], raw_palette[idx + 1], raw_palette[idx + 2]))
+            palette.append(
+                (raw_palette[idx], raw_palette[idx + 1], raw_palette[idx + 2])
+            )
         else:
             palette.append((0, 0, 0))
 
@@ -399,7 +426,7 @@ def _convert_to_lvgl8(image):
     header_word1 = cf | (always_zero << 5) | (reserved << 8) | (w << 10) | (h << 21)
 
     output = BytesIO()
-    output.write(struct.pack('<I', header_word1))
+    output.write(struct.pack("<I", header_word1))
 
     for r, g, b in palette:
         output.write(bytes([b, g, r, 0xFF]))
@@ -407,6 +434,7 @@ def _convert_to_lvgl8(image):
     output.write(image.tobytes())
 
     return output
+
 
 @app.get("/photo/<int:item_id>")
 @app.get("/photo/<int:item_id>/")
@@ -449,7 +477,9 @@ def get_image(item_id: int, page: str = "0_1.jpg"):
         print(f"原始图片尺寸: {original_width}x{original_height}")
 
         # 使用传入的文件名
-        filename_base = page.rsplit(".", 1)[0] if "." in page else f"{item_id}_{page_num}"
+        filename_base = (
+            page.rsplit(".", 1)[0] if "." in page else f"{item_id}_{page_num}"
+        )
 
         return build_image_response(image, filename_base)
 
