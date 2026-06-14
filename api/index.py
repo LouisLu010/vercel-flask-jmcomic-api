@@ -107,11 +107,6 @@ def optimize_png_image(image, quality: int):
     )
 
 
-def png_compress_level_from_quality(quality: int) -> int:
-    quality = max(1, min(100, quality))
-    return max(0, min(9, round((100 - quality) / 100 * 9)))
-
-
 def build_image_response(image, filename_base: str, quality: int = 50):
     img_io = BytesIO()
 
@@ -121,7 +116,7 @@ def build_image_response(image, filename_base: str, quality: int = 50):
             img_io,
             "PNG",
             optimize=True,
-            compress_level=png_compress_level_from_quality(quality),
+            compress_level=9,
         )
         mimetype = "image/png"
         filename = f"{filename_base}.png"
