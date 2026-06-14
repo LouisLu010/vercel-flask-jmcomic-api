@@ -75,6 +75,49 @@ def decode_search_value(value: str) -> str:
         return value
 
 
+def is_truthy_arg(name: str) -> bool:
+    value = request.args.get(name, "0")
+    return value in ("1", "true", "True", "yes", "on")
+
+
+def normalize_rgb_image(image):
+    if image.mode in ["RGBA", "LA", "P"]:
+        background = Image.new("RGB", image.size, (255, 255, 255))
+        if image.mode in ["RGBA", "LA"]:
+            background.paste(image, mask=image.split()[-1])
+        else:
+            background.paste(image)
+        return background
+    if image.mode != "RGB":
+        return image.convert("RGB")
+    return image
+
+
+def build_image_response(image, filename_base: str, quality: int = 50):
+    img_io = BytesIO()
+
+    if is_truthy_arg("ifPNG"):
+        image.save(img_io, "PNG", optimize=True)
+        mimetype = "image/png"
+        filename = f"{filename_base}.png"
+    else:
+        image = normalize_rgb_image(image)
+        image.save(img_io, "JPEG", quality=quality, optimize=True)
+        mimetype = "image/jpeg"
+        filename = f"{filename_base}.jpg"
+
+    img_io.seek(0)
+    return Response(
+        img_io.getvalue(),
+        mimetype=mimetype,
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "public, max-age=86400",
+            "Content-Type": mimetype,
+        },
+    )
+
+
 @app.get("/")
 def read_root():
     return """
@@ -116,50 +159,7 @@ def get_album_cover(item_id: int):
         else:
             print(f"图片宽度 {original_width}px 已小于限制 {max_width}px，无需压缩")
 
-        # 进一步优化图片质量和大小
-        optimize_options = {
-            "quality": 50,
-            "optimize": True,
-        }
-
-        # 如果是PNG或WEBP格式，转换为JPEG以进一步减小体积
-        if image.mode in ["RGBA", "P"]:
-            # 创建白色背景
-            background = Image.new("RGB", image.size, (255, 255, 255))
-            # 如果有透明通道，将图片粘贴到白色背景上
-            if image.mode == "RGBA":
-                background.paste(image, mask=image.split()[-1])  # 使用alpha通道作为mask
-            else:
-                background.paste(image)
-            image = background
-        elif image.mode != "RGB":
-            image = image.convert("RGB")
-
-        # 将PIL.Image转换为字节流
-        img_io = BytesIO()
-
-        # 保存为JPEG格式到内存（应用压缩设置）
-        image.save(img_io, "JPEG", **optimize_options)
-
-        # 获取压缩后的大小
-        compressed_size = img_io.tell()
-        img_io.seek(0)
-
-        print(f"压缩后文件大小: {compressed_size / 1024:.1f} KB")
-
-        # 生成文件名
-        filename = f"{item_id}_cover.jpg"
-
-        # 返回图片响应
-        return Response(
-            img_io.getvalue(),
-            mimetype="image/jpeg",
-            headers={
-                "Content-Disposition": f'inline; filename="{filename}"',
-                "Cache-Control": "public, max-age=86400",
-                "Content-Type": "image/jpeg",
-            },
-        )
+        return build_image_response(image, f"{item_id}_cover", 50)
 
     except Exception as e:
         return jsonify({"code": 500, "message": str(e)}), 500
@@ -330,7 +330,6 @@ def image_proxy():
         # 设置目标宽度和图片质量，默认值针对IoT设备优化
         target_width = int(request.args.get("width", 600))
         quality = int(request.args.get("quality", 50))
-        iflvgl = request.args.get("ifLVGL", "0")
 
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
@@ -352,7 +351,7 @@ def image_proxy():
             (target_width, target_height), Image.Resampling.LANCZOS
         )
 
-        if iflvgl in ("1", "true", "True"):
+        if is_truthy_arg("ifLVGL"):
             output_buffer = _convert_to_lvgl8(resized_image)
             return Response(
                 output_buffer.getvalue(),
@@ -363,33 +362,8 @@ def image_proxy():
                 },
             )
 
-        # 保存为JPEG格式并调整质量
-        output_buffer = BytesIO()
-        if resized_image.mode in ("RGBA", "LA", "P"):
-            # 如果图片有透明度，转换为RGB
-            background = Image.new("RGB", resized_image.size, (255, 255, 255))
-            background.paste(
-                resized_image,
-                mask=(
-                    resized_image.split()[-1] if resized_image.mode == "RGBA" else None
-                ),
-            )
-            resized_image = background
-        elif resized_image.mode != "RGB":
-            resized_image = resized_image.convert("RGB")
-
-        resized_image.save(output_buffer, format="JPEG", quality=quality, optimize=True)
-        output_buffer.seek(0)
-
-        # 返回处理后的图片
-        return Response(
-            output_buffer.getvalue(),
-            mimetype="image/jpeg",
-            headers={
-                "Cache-Control": "public, max-age=86400",
-                "Content-Type": "image/jpeg",
-            },
-        )
+        # 保存为JPEG或PNG格式
+        return build_image_response(resized_image, "image", quality)
 
     except Exception as e:
         logging.error(f"图片处理失败: {str(e)}")
@@ -474,31 +448,10 @@ def get_image(item_id: int, page: str = "0_1.jpg"):
         original_width, original_height = image.size
         print(f"原始图片尺寸: {original_width}x{original_height}")
 
-        # 将PIL.Image转换为字节流
-        img_io = BytesIO()
-
-        # 保存为JPEG格式到内存（应用压缩设置）
-        image.save(img_io, "JPEG")
-
-        # 获取压缩后的大小
-        compressed_size = img_io.tell()
-        img_io.seek(0)
-
-        print(f"压缩后文件大小: {compressed_size / 1024:.1f} KB")
-
         # 使用传入的文件名
-        filename = page if "_" in page and page.endswith(".jpg") else f"{item_id}_{page_num}.jpg"
+        filename_base = page.rsplit(".", 1)[0] if "." in page else f"{item_id}_{page_num}"
 
-        # 返回图片响应
-        return Response(
-            img_io.getvalue(),
-            mimetype="image/jpeg",
-            headers={
-                "Content-Disposition": f'inline; filename="{filename}"',
-                "Cache-Control": "public, max-age=86400",
-                "Content-Type": "image/jpeg",
-            },
-        )
+        return build_image_response(image, filename_base)
 
     except Exception as e:
         return jsonify({"code": 500, "message": str(e)}), 500
